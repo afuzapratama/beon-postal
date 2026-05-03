@@ -1,0 +1,10 @@
+# compiled binary
+postal-api
+
+# cached Japan Post CSV + SQLite database (large files, not committed)
+data/KEN_ALL.CSV
+data/*.CSV
+data/*.csv
+data/*.db
+data/*.db-wal
+data/*.db-shm
