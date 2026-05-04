@@ -138,6 +138,16 @@ curl https://yourdomain.com/postal/1130021
 curl https://yourdomain.com/health
 ```
 
+### Update Aplikasi (setelah push ke GitHub)
+
+```bash
+cd /www/wwwroot/beon-postal
+git pull origin main
+go build -ldflags="-s -w" -o postal-api .
+supervisorctl restart beon-postal
+supervisorctl status
+```
+
 ### Update Data (opsional)
 
 Kalau mau refresh data dari Japan Post terbaru:
