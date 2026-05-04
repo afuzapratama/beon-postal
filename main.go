@@ -25,9 +25,32 @@ func main() {
 
 	n, _ := countEntries()
 	log.Printf("Postal API ready — %d entries in SQLite, listening on :%s", n, port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.ListenAndServe(":"+port, corsMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// corsMiddleware adds CORS headers to every response and handles preflight
+// OPTIONS requests. The allowed origin defaults to "*" but can be overridden
+// by setting the CORS_ORIGIN environment variable.
+func corsMiddleware(next http.Handler) http.Handler {
+	allowedOrigin := os.Getenv("CORS_ORIGIN")
+	if allowedOrigin == "" {
+		allowedOrigin = "*"
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		// Preflight request — respond immediately without hitting handlers.
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // apiResponse is the standard envelope returned by every endpoint.
