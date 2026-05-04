@@ -24,6 +24,133 @@ Powered by **BEON API**
 
 ---
 
+## Deploy di aaPanel
+
+Panduan lengkap untuk menjalankan API ini sebagai service permanen di server dengan **aaPanel**.
+
+### 1. Install Go
+
+SSH ke server, lalu install Go:
+
+```bash
+wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
+tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+go version
+```
+
+### 2. Clone & Build
+
+```bash
+cd /www/wwwroot
+git clone git@github.com:afuzapratama/beon-postal.git
+cd beon-postal
+go mod tidy
+go build -ldflags="-s -w" -o postal-api .
+```
+
+### 3. Jalankan pertama kali (seed data)
+
+```bash
+export PORT=8090
+./postal-api
+```
+
+Tunggu sampai muncul log:
+```
+Postal API ready — 124453 entries in SQLite, listening on :8090
+```
+Tekan `Ctrl+C` — data sudah tersimpan di `data/postal.db`. Langkah berikutnya server dijalankan lewat Supervisor.
+
+### 4. Daftarkan ke Supervisor (aaPanel)
+
+Buka aaPanel → **App Store** → install **Supervisor** jika belum ada.
+
+Kemudian masuk ke **Supervisor → Add Daemon** dan isi:
+
+| Field | Value |
+|---|---|
+| Name | `beon-postal` |
+| Run User | `www` |
+| Run Dir | `/www/wwwroot/beon-postal` |
+| Command | `/www/wwwroot/beon-postal/postal-api` |
+| Processes | `1` |
+
+Atau buat config secara manual di `/etc/supervisor/conf.d/beon-postal.conf`:
+
+```ini
+[program:beon-postal]
+command=/www/wwwroot/beon-postal/postal-api
+directory=/www/wwwroot/beon-postal
+user=www
+autostart=true
+autorestart=true
+environment=PORT="8090"
+stdout_logfile=/www/wwwlogs/beon-postal.log
+stderr_logfile=/www/wwwlogs/beon-postal.error.log
+```
+
+Reload Supervisor:
+
+```bash
+supervisorctl reread
+supervisorctl update
+supervisorctl start beon-postal
+supervisorctl status
+```
+
+### 5. Konfigurasi Reverse Proxy di aaPanel
+
+Buka aaPanel → **Website** → pilih domain → **Reverse Proxy** → **Add Reverse Proxy**:
+
+| Field | Value |
+|---|---|
+| Proxy Name | `beon-postal` |
+| Target URL | `http://127.0.0.1:8090` |
+
+Atau tambahkan config Nginx manual di block server domain:
+
+```nginx
+location /postal/ {
+    proxy_pass         http://127.0.0.1:8090;
+    proxy_set_header   Host $host;
+    proxy_set_header   X-Real-IP $remote_addr;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+
+location /health {
+    proxy_pass         http://127.0.0.1:8090;
+    proxy_set_header   Host $host;
+}
+```
+
+Reload Nginx:
+
+```bash
+nginx -s reload
+```
+
+### 6. Test
+
+```bash
+curl https://yourdomain.com/postal/1130021
+curl https://yourdomain.com/health
+```
+
+### Update Data (opsional)
+
+Kalau mau refresh data dari Japan Post terbaru:
+
+```bash
+cd /www/wwwroot/beon-postal
+rm data/postal.db data/KEN_ALL.CSV
+supervisorctl restart beon-postal
+# server akan auto-download ulang saat restart
+```
+
+---
+
 ## Getting Started
 
 ```bash
