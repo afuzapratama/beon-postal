@@ -47,120 +47,87 @@ go version
 
 ```bash
 cd /www/wwwroot
-git clone git@github.com:afuzapratama/beon-postal.git
+git clone https://github.com/afuzapratama/beon-postal.git
 cd beon-postal
-go mod tidy
-go build -ldflags="-s -w" -o postal-api .
+go mod download
+go build -trimpath -ldflags="-s -w" -o postal-api .
+install -d -o www -g www -m 750 data
+chown www:www postal-api
+chmod 750 postal-api
 ```
 
-### 3. Jalankan pertama kali (seed data)
+Folder `data` harus writable oleh user `www` karena SQLite membuat file database, WAL, dan cache CSV di sana.
 
-```bash
-export PORT=8090
-./postal-api
+### 3. Tambahkan sebagai Go Project
+
+Buka **Website → Go Project → Add Project**, lalu isi:
+
+| Field | Value |
+|---|---|
+| Executable File | `/www/wwwroot/beon-postal/postal-api` |
+| Project Name | `beon-postal` |
+| Project Port | `8090` |
+| Release port | Jangan dicentang jika memakai domain/reverse proxy |
+| Execution Command | `/www/wwwroot/beon-postal/postal-api` |
+| Environment Variables | `PORT=8090` |
+| Run User | `www` |
+| Startup | Aktifkan |
+| Remark | `Japanese Postal Code API` |
+| Domain name | Domain API, misalnya `postal.example.com` |
+
+Jika API hanya boleh diakses browser dari frontend tertentu, tambahkan environment variable berikut:
+
+```text
+CORS_ORIGIN=https://app.example.com
 ```
 
-Tunggu sampai muncul log:
-```
+Setelah klik **Confirm**, first-run akan otomatis mengunduh data Japan Post, mengisi SQLite, lalu membangun in-memory cache. Periksa **Project logs** sampai muncul:
+
+```text
+Loaded 124493 entries for 120717 postal codes into memory
 Postal API ready — 124493 entries in SQLite, listening on :8090
 ```
-Tekan `Ctrl+C` — data sudah tersimpan di `data/postal.db`. Langkah berikutnya server dijalankan lewat Supervisor.
 
-### 4. Daftarkan ke Supervisor (aaPanel)
+### 4. Aktifkan Domain dan SSL
 
-Buka aaPanel → **App Store** → install **Supervisor** jika belum ada.
+Pastikan DNS `A` domain sudah mengarah ke IP server. Di detail Go Project:
 
-Kemudian masuk ke **Supervisor → Add Daemon** dan isi:
+- Tambahkan domain melalui **Domain Manager** jika belum diisi saat membuat project.
+- Aktifkan **External network mapping** melalui menu **Mapping**.
+- Pasang sertifikat Let's Encrypt melalui menu **SSL**.
+- Biarkan port `8090` tertutup dari akses publik; trafik masuk melalui Nginx pada port 80/443.
 
-| Field | Value |
-|---|---|
-| Name | `beon-postal` |
-| Run User | `www` |
-| Run Dir | `/www/wwwroot/beon-postal` |
-| Command | `/www/wwwroot/beon-postal/postal-api` |
-| Processes | `1` |
-
-Atau buat config secara manual di `/etc/supervisor/conf.d/beon-postal.conf`:
-
-```ini
-[program:beon-postal]
-command=/www/wwwroot/beon-postal/postal-api
-directory=/www/wwwroot/beon-postal
-user=www
-autostart=true
-autorestart=true
-environment=PORT="8090"
-stdout_logfile=/www/wwwlogs/beon-postal.log
-stderr_logfile=/www/wwwlogs/beon-postal.error.log
-```
-
-Reload Supervisor:
+### 5. Test
 
 ```bash
-supervisorctl reread
-supervisorctl update
-supervisorctl start beon-postal
-supervisorctl status
-```
-
-### 5. Konfigurasi Reverse Proxy di aaPanel
-
-Buka aaPanel → **Website** → pilih domain → **Reverse Proxy** → **Add Reverse Proxy**:
-
-| Field | Value |
-|---|---|
-| Proxy Name | `beon-postal` |
-| Target URL | `http://127.0.0.1:8090` |
-
-Atau tambahkan config Nginx manual di block server domain:
-
-```nginx
-location /postal/ {
-    proxy_pass         http://127.0.0.1:8090;
-    proxy_set_header   Host $host;
-    proxy_set_header   X-Real-IP $remote_addr;
-    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-
-location /health {
-    proxy_pass         http://127.0.0.1:8090;
-    proxy_set_header   Host $host;
-}
-```
-
-Reload Nginx:
-
-```bash
-nginx -s reload
-```
-
-### 6. Test
-
-```bash
-curl https://yourdomain.com/postal/1130021
-curl https://yourdomain.com/health
+curl https://postal.example.com/postal/1130021
+curl https://postal.example.com/health
 ```
 
 ### Update Aplikasi (setelah push ke GitHub)
 
 ```bash
 cd /www/wwwroot/beon-postal
-git pull origin main
-go build -ldflags="-s -w" -o postal-api .
-supervisorctl restart beon-postal
-supervisorctl status
+git pull --ff-only origin main
+go mod download
+go build -trimpath -ldflags="-s -w" -o postal-api.new .
+chown www:www postal-api.new
+chmod 750 postal-api.new
+mv postal-api.new postal-api
 ```
+
+Setelah build selesai, klik **Restart** pada Go Project dan periksa **Project logs**.
 
 ### Update Data (opsional)
 
-Kalau mau refresh data dari Japan Post terbaru:
+Klik **Stop** pada Go Project, lalu jalankan:
 
 ```bash
 cd /www/wwwroot/beon-postal
-rm data/postal.db data/KEN_ALL.CSV
-supervisorctl restart beon-postal
-# server akan auto-download ulang saat restart
+rm -f data/postal.db data/postal.db-shm data/postal.db-wal data/KEN_ALL.CSV
 ```
+
+Klik **Start** kembali. Server akan mengunduh dataset terbaru dan membangun ulang cache.
 
 ---
 
