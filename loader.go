@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,15 +12,20 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/transform"
 )
 
 const (
-	kenAllURL  = "https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip"
-	kenAllPath = "data/KEN_ALL.CSV"
+	kenAllURL      = "https://www.post.japanpost.jp/service/search/zipcode/download/kogaki/zip/ken_all.zip"
+	kenAllPath     = "data/KEN_ALL.CSV"
+	maxArchiveSize = 20 << 20
+	maxCSVSize     = 100 << 20
 )
+
+var japanPostClient = &http.Client{Timeout: 30 * time.Second}
 
 // PostalEntry holds address data for a single postal code entry.
 type PostalEntry struct {
@@ -53,13 +59,16 @@ func loadPostalDB() error {
 		log.Printf("Importing cached CSV into SQLite...")
 		return parseAndInsertCSV(f)
 	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("open cached CSV: %w", err)
+	}
 
 	log.Println("Downloading KEN_ALL.ZIP from Japan Post...")
 	return downloadAndParse()
 }
 
 func downloadAndParse() error {
-	resp, err := http.Get(kenAllURL)
+	resp, err := japanPostClient.Get(kenAllURL)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
@@ -69,9 +78,9 @@ func downloadAndParse() error {
 		return fmt.Errorf("unexpected HTTP status: %d", resp.StatusCode)
 	}
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readAtMost(resp.Body, maxArchiveSize)
 	if err != nil {
-		return fmt.Errorf("read body: %w", err)
+		return fmt.Errorf("read archive: %w", err)
 	}
 
 	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
@@ -83,27 +92,44 @@ func downloadAndParse() error {
 		if !strings.HasSuffix(strings.ToLower(zf.Name), ".csv") {
 			continue
 		}
+		if zf.UncompressedSize64 > maxCSVSize {
+			return fmt.Errorf("CSV file is too large: %d bytes", zf.UncompressedSize64)
+		}
 
 		rc, err := zf.Open()
 		if err != nil {
 			return fmt.Errorf("open zip entry %q: %w", zf.Name, err)
 		}
-		csvBytes, err := io.ReadAll(rc)
-		rc.Close()
+		csvBytes, err := readAtMost(rc, maxCSVSize)
+		closeErr := rc.Close()
 		if err != nil {
 			return fmt.Errorf("read csv bytes: %w", err)
 		}
+		if closeErr != nil {
+			return fmt.Errorf("close zip entry %q: %w", zf.Name, closeErr)
+		}
 
-		if mkErr := os.MkdirAll("data", 0750); mkErr == nil {
-			if writeErr := os.WriteFile(kenAllPath, csvBytes, 0640); writeErr == nil {
-				log.Printf("Cached to %s", kenAllPath)
-			}
+		if err := os.WriteFile(kenAllPath, csvBytes, 0640); err != nil {
+			log.Printf("Warning: could not cache %s: %v", kenAllPath, err)
+		} else {
+			log.Printf("Cached to %s", kenAllPath)
 		}
 
 		return parseAndInsertCSV(bytes.NewReader(csvBytes))
 	}
 
 	return fmt.Errorf("no CSV file found in archive")
+}
+
+func readAtMost(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("content exceeds %d-byte limit", limit)
+	}
+	return b, nil
 }
 
 // ---------- CSV parsing ----------
@@ -145,15 +171,15 @@ func parseAndInsertCSV(r io.Reader) error {
 			break
 		}
 		if err != nil {
-			continue
+			return fmt.Errorf("parse CSV: %w", err)
 		}
 		if len(rec) < 9 {
-			continue
+			return fmt.Errorf("parse CSV: record has %d fields, want at least 9", len(rec))
 		}
 
 		code := strings.TrimSpace(rec[2])
-		if len(code) != 7 {
-			continue
+		if !isSevenDigits(code) {
+			return fmt.Errorf("parse CSV: invalid postal code %q", code)
 		}
 
 		prefKana := strings.TrimSpace(rec[3])

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,10 @@ func main() {
 	if err := loadPostalDB(); err != nil {
 		log.Fatalf("load postal data: %v", err)
 	}
+	defer db.Close()
+	if err := loadPostalCache(); err != nil {
+		log.Fatalf("load postal cache: %v", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /postal/{code}", postalHandler)
@@ -23,9 +28,21 @@ func main() {
 		port = "8080"
 	}
 
-	n, _ := countEntries()
+	n, err := countEntries()
+	if err != nil {
+		log.Fatalf("count postal entries: %v", err)
+	}
 	log.Printf("Postal API ready — %d entries in SQLite, listening on :%s", n, port)
-	if err := http.ListenAndServe(":"+port, corsMiddleware(mux)); err != nil {
+
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           corsMiddleware(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
@@ -89,10 +106,8 @@ func writeJSON(w http.ResponseWriter, status int, payload apiResponse) {
 // postalHandler handles GET /postal/{code}
 // Accepts 7-digit code with or without hyphen, e.g. 1130021 or 113-0021.
 func postalHandler(w http.ResponseWriter, r *http.Request) {
-	code := strings.ReplaceAll(r.PathValue("code"), "-", "")
-	code = strings.TrimSpace(code)
-
-	if len(code) != 7 {
+	code, ok := normalizePostalCode(r.PathValue("code"))
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, apiResponse{
 			Success: false,
 			Error:   "postal code must be 7 digits",
@@ -138,24 +153,56 @@ func postalHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func normalizePostalCode(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) == 8 && raw[3] == '-' {
+		raw = raw[:3] + raw[4:]
+	}
+	if !isSevenDigits(raw) {
+		return "", false
+	}
+	return raw, true
+}
+
+func isSevenDigits(value string) bool {
+	if len(value) != 7 {
+		return false
+	}
+	for i := range len(value) {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // healthHandler handles GET /health
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	n, _ := countEntries()
+	n, err := countEntries()
+	cached, cacheOK := cachedEntryCount()
+	if err != nil || n == 0 || !cacheOK || cached != n {
+		if err != nil {
+			log.Printf("health countEntries: %v", err)
+		} else if n == 0 {
+			log.Printf("health check: postal database is empty")
+		} else {
+			log.Printf("health check: memory cache mismatch (database=%d, cache=%d)", n, cached)
+		}
+		writeJSON(w, http.StatusServiceUnavailable, apiResponse{
+			Success: false,
+			Error:   "database unavailable",
+			Meta:    newMeta(),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, apiResponse{
 		Success: true,
 		Data: map[string]any{
-			"status":  "ok",
-			"records": n,
+			"status":        "ok",
+			"records":       n,
+			"cache":         "memory",
+			"cachedRecords": cached,
 		},
 		Meta: newMeta(),
-	})
-}
-
-// jsonError is kept for internal use by writeJSON error cases (not exported).
-func jsonError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, apiResponse{
-		Success: false,
-		Error:   msg,
-		Meta:    newMeta(),
 	})
 }

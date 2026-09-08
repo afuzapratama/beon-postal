@@ -2,7 +2,7 @@
 
 **Japanese Postal Code API** — fast, lightweight REST API built with Go and SQLite.
 
-Data is sourced from the official [Japan Post (郵便局)](https://www.post.japanpost.jp/zipcode/download.html) database (~124,000 postal codes), stored in a local SQLite database for instant lookups.
+Data is sourced from the official [Japan Post (郵便局)](https://www.post.japanpost.jp/service/search/zipcode/download/) database (~124,000 postal codes), stored in a local SQLite database for instant lookups.
 
 Powered by **BEON API**
 
@@ -12,6 +12,7 @@ Powered by **BEON API**
 
 - Zero external dependencies at runtime (pure Go + embedded SQLite)
 - Auto-downloads and seeds data from Japan Post on first run
+- Loads all postal records into an in-memory cache for database-free lookups
 - SQLite with WAL mode for fast concurrent reads
 - Instant startup on subsequent runs (reads from cached `data/postal.db`)
 - Clean JSON response envelope with `success`, `data`, and `meta`
@@ -20,7 +21,8 @@ Powered by **BEON API**
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.25+
+- At least 128 MB free memory; 256 MB is recommended for deployment
 
 ---
 
@@ -33,8 +35,9 @@ Panduan lengkap untuk menjalankan API ini sebagai service permanen di server den
 SSH ke server, lalu install Go:
 
 ```bash
-wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
-tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
+GO_VERSION="$(curl -fsSL 'https://go.dev/VERSION?m=text' | sed -n '1p')"
+wget "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz"
+tar -C /usr/local -xzf "${GO_VERSION}.linux-amd64.tar.gz"
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 go version
@@ -59,7 +62,7 @@ export PORT=8090
 
 Tunggu sampai muncul log:
 ```
-Postal API ready — 124453 entries in SQLite, listening on :8090
+Postal API ready — 124493 entries in SQLite, listening on :8090
 ```
 Tekan `Ctrl+C` — data sudah tersimpan di `data/postal.db`. Langkah berikutnya server dijalankan lewat Supervisor.
 
@@ -173,10 +176,11 @@ go run .
 On first run, the server will automatically download `KEN_ALL.ZIP` from Japan Post, parse and import all records into `data/postal.db`, then start listening.
 
 ```
-2026/05/03 12:00:00 Downloading KEN_ALL.ZIP from Japan Post...
-2026/05/03 12:00:04 Cached to data/KEN_ALL.CSV
-2026/05/03 12:00:05 Inserted 124453 entries into SQLite
-2026/05/03 12:00:05 Postal API ready — 124453 entries in SQLite, listening on :8080
+2026/09/08 12:00:00 Downloading KEN_ALL.ZIP from Japan Post...
+2026/09/08 12:00:04 Cached to data/KEN_ALL.CSV
+2026/09/08 12:00:05 Inserted 124493 unique entries into SQLite
+2026/09/08 12:00:05 Loaded 124493 entries for 120717 postal codes into memory in 437ms
+2026/09/08 12:00:05 Postal API ready — 124493 entries in SQLite, listening on :8080
 ```
 
 ### Custom port
@@ -191,6 +195,12 @@ go run .
 ```bash
 go build -ldflags="-s -w" -o postal-api .
 ./postal-api
+```
+
+### Run checks
+
+```bash
+make check
 ```
 
 ### Pre-download data (optional)
@@ -288,8 +298,10 @@ GET /postal/0040000
 {
   "success": true,
   "data": {
-    "records": 124453,
-    "status": "ok"
+    "records": 124493,
+    "status": "ok",
+    "cache": "memory",
+    "cachedRecords": 124493
   },
   "meta": {
     "powered_by": "BEON API",
@@ -319,6 +331,8 @@ GET /postal/0040000
 ```
 beon-postal/
 ├── main.go     — HTTP server, route handlers, response envelope
+├── main_test.go — automated API, database, CSV, and CORS tests
+├── cache.go    — immutable in-memory postal-code lookup cache
 ├── db.go       — SQLite init, schema, query, bulk insert
 ├── loader.go   — CSV download, Shift-JIS decoding, data seeding
 ├── go.mod
@@ -333,8 +347,8 @@ beon-postal/
 
 ## Data Source
 
-- General page: https://www.post.japanpost.jp/zipcode/download.html
-- Download URL: https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip
+- General page: https://www.post.japanpost.jp/service/search/zipcode/download/
+- Download URL: https://www.post.japanpost.jp/service/search/zipcode/download/kogaki/zip/ken_all.zip
 - Encoding: Windows-31J (Shift-JIS) — decoded to UTF-8 automatically
 - Latest update: check Japan Post website for data freshness
 

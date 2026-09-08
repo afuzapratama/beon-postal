@@ -1,5 +1,6 @@
 # compiled binary
 postal-api
+/beon-postal-go
 
 # cached Japan Post CSV + SQLite database (large files, not committed)
 data/KEN_ALL.CSV
